@@ -46,21 +46,21 @@ dict_keys([
     typing.Optional[torch.device]]
     )
 '''
-fw_bw_param_type = typing.Sequence[typing.Optional[torch.Tensor]]
-fw_bw_ret_type = typing.List[torch.Tensor]
+param_type = typing.Sequence[typing.Optional[torch.Tensor]]
+ret_type = typing.List[torch.Tensor]
 
 @torch._custom_ops.custom_op("easydist::fw_bw_split")
-def fw_bw_split(args: fw_bw_param_type) -> fw_bw_ret_type:
+def fw_bw_split(args: param_type) -> ret_type:
     ...
 
 @torch._custom_ops.impl_abstract("easydist::fw_bw_split")
-def fw_bw_split_impl_abstract(args: fw_bw_param_type) -> fw_bw_ret_type:
+def fw_bw_split_impl_abstract(args: param_type) -> ret_type:
     need_clone = lambda arg: isinstance(arg, torch.Tensor) and arg.requires_grad
     args = [arg.clone() if need_clone(arg) else arg for arg in args]
     return args
 
 @torch._custom_ops.impl("easydist::fw_bw_split")
-def fw_bw_split_impl(args: fw_bw_param_type) -> fw_bw_ret_type:
+def fw_bw_split_impl(args: param_type) -> ret_type:
     need_clone = lambda arg: isinstance(arg, torch.Tensor) and arg.requires_grad
     args = [arg.clone() if need_clone(arg) else arg for arg in args]
     return args
@@ -79,7 +79,7 @@ class FWBWSplitFunc(torch.autograd.Function):
         return tuple(torch.ops.easydist.fw_bw_split(grads))
 
 
-def fw_bw_split_func(tensor_list: fw_bw_param_type) -> fw_bw_ret_type:
+def fw_bw_split_func(tensor_list: typing.Tuple[torch.Tensor]) -> typing.Tuple[torch.Tensor]:
     return FWBWSplitFunc.apply(*tensor_list)
 
 
@@ -97,6 +97,47 @@ class BeforeBWSplitFunc(torch.autograd.Function):
 def before_bw_split_func(tensor):
     ret = BeforeBWSplitFunc.apply(tensor)
     return ret
+
+@torch._custom_ops.custom_op("easydist::step_split")
+def step_split(args: param_type) -> ret_type:
+    ...
+
+@torch._custom_ops.impl_abstract("easydist::step_split")
+def step_split_impl_abstract(args: param_type) -> ret_type:
+    need_clone = lambda arg: isinstance(arg, torch.Tensor) and arg.requires_grad
+    args = [arg.clone() if need_clone(arg) else arg for arg in args]
+    return args
+
+@torch._custom_ops.impl("easydist::step_split")
+def step_split_impl(args: param_type) -> ret_type:
+    need_clone = lambda arg: isinstance(arg, torch.Tensor) and arg.requires_grad
+    args = [arg.clone() if need_clone(arg) else arg for arg in args]
+    return args
+
+# doc https://pytorch.org/docs/stable/notes/extending.html#how-to-use
+class StepSplitFunc(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, *tensor_list): # tensors must be passed as args
+        tensor_list = list(tensor_list)
+        return tuple(torch.ops.easydist.step_split(tensor_list)) # return must be tensor of tuple of tensors
+
+    @staticmethod
+    def backward(ctx, *grad):
+        return grad # return must be tensor of tuple of tensors
+
+def step_split_func(tensor_list: typing.Tuple[torch.Tensor]) -> typing.Tuple[torch.Tensor]:
+    return StepSplitFunc.apply(*tensor_list)
+
+__params_buffers_named_states_global = None
+
+def get_stateless_func_input_global():
+    global __params_buffers_named_states_global
+    return __params_buffers_named_states_global
+
+def set_stateless_func_input_global(named_states):
+    global __params_buffers_named_states_global
+    __params_buffers_named_states_global = named_states
 
 
 if __name__ == '__main__':

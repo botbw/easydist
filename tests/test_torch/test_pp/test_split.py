@@ -30,7 +30,7 @@ from easydist.utils import rgetattr, rsetattr
 from easydist.torch.experimental.pp.ed_make_fx import ed_make_fx
 from easydist.torch.experimental.pp.utils import save_graphviz_dot
 from easydist.torch.utils import _enable_compile, _rematerialize_optimizer
-
+from easydist.torch.experimental.pp.split_op import set_stateless_func_input_global, get_stateless_func_input_global
 
 def seed(seed=42):
     # Set seed for PyTorch
@@ -158,6 +158,7 @@ def test_main(module, split_ann_or_policy, rand_input_gen_method, train_step_fun
         flat_named_states, named_states_spec = pytree.tree_flatten(named_states)
 
     def stateless_func(func, params, buffers, named_states, args, kwargs):
+        set_stateless_func_input_global((params, buffers, named_states, args, kwargs))
         with stateless._reparametrize_module(
                 cast(torch.nn.Module, module), {
                     **params,
@@ -254,6 +255,7 @@ def factory_gen_rand_input_ids(vocab_size):
 
 if __name__ == '__main__':
     test_main(Foo(), {'norm'}, gen_rand_input_foo, train_step)
+    exit()
     test_main(Foo1(), {
         'norm',
         'linear0_1',

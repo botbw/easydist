@@ -16,6 +16,9 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 from easydist.torch.experimental.pp.utils import save_graphviz_dot
 from easydist.utils import rgetattr, rsetattr
 from easydist.torch.experimental.pp.ed_split_module import ed_split_module
+from easydist.torch.experimental.pp.split_op import fw_bw_split_func, before_bw_split_func, set_stateless_func_input_global, step_split_func, get_stateless_func_input_global
+
+
 # ================================= section start ========================================
 # The idea of functions in this section are borrowed from
 # https://github.com/pytorch/PiPPy/blob/e9e2d5f0164a2e5d952a1424a3926da543365801/pippy/IR.py#L346
@@ -78,7 +81,6 @@ def _to_tuple(x):
         return x
     return (x, )
 
-from easydist.torch.experimental.pp.split_op import fw_bw_split_func, before_bw_split_func, fw_bw_param_type, fw_bw_ret_type
 
 # ================================= section start ========================================
 # The idea of functions in this section are borrowed from
@@ -315,6 +317,15 @@ class SplitPatcher(_Patcher):
 
             def step_wrapper(opt, *args, **kwargs):
                 step_split_point()
+                params, buffers, named_states, user_args, user_kwargs = get_stateless_func_input_global()
+                set_stateless_func_input_global(None)
+                grads = []
+                for param in params.values():
+                    if param.requires_grad:
+                        grads.append(param.grad)
+                tensors_flatten, _ = pytree.tree_flatten((params, buffers, named_states, user_args, user_kwargs, grads))
+                tensors_tuple = list_before_split({}, tensors_flatten)
+                tensors_tuple = step_split_func(tensors_tuple)
                 orig_step(opt, *args, **kwargs)
 
             patcher.patch_method(opt_cls, 'step', step_wrapper, deduplicate=False)
