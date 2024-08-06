@@ -468,8 +468,6 @@ def _compile_auto(func,
         params = dict(module.named_parameters())
         buffers = dict(module.named_buffers())
 
-        #print(f"initial params: {params}")
-        #print(f"initial buffers: {buffers}")
         if isinstance(init_helper, SetParaInitHelper):
             init_helper.module = module
 
@@ -558,7 +556,13 @@ def _compile_auto(func,
     rank = torch.distributed.get_rank()
 
     # Lansong(TODO) Currently send strategy by rpc. But broadcast way is more efficient.
-    rpc.init_rpc(f"ed_worker{rank}", rank=rank, world_size=world_size)
+    master_address = os.environ["MASTER_ADDR"]
+    master_port = os.environ["MASTER_PORT"]
+    rpc.init_rpc(f"ed_worker{rank}", rank=rank, world_size=world_size,rpc_backend_options=rpc.TensorPipeRpcBackendOptions(
+            init_method=f"tcp://{master_address}:{master_port}",
+            _transports=["uv", "shm"],
+            _channels=["basic"]
+    ))
     if rank == 0:
         shape_info, opt_strategy, sharding_strategy, args_strategy, state_io_map = easydist_shard(
             traced_graph, state_tensor_num, input_signature, params, buffers, named_states, args,
@@ -712,7 +716,7 @@ def _compile_auto(func,
             args_chunk_spec=args_chunk_spec,
             kwargs_chunk_spec=kwargs_chunk_spec,
             returns_chunk_spec=outputs_chunk_spec,
-            pp_group=pp_mesh.get_dim_groups()[0],
+            pp_group=pp_mesh.get_group('pp'),
             device=torch.device(f"cuda:{rank}"),
             sharded_graph=sharded_gm,
             return_to_all_stages=return_to_all_stages,
