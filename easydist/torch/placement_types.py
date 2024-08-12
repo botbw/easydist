@@ -40,7 +40,7 @@ class Partition:
             raise ValueError("global_shape, start_coord and end_coord must have the same length")
 
     def __repr__(self) -> str:
-        return f"[{self.start_coord}->{self.end_coord} {self.rank}]"
+        return f"{{{self.start_coord}->{self.end_coord} {self.rank}}}"
 
     def shard(self, tensor_dim: int, shard_num: int, shard_idx: int) -> "Partition":
         if (self.end_coord[tensor_dim] - self.start_coord[tensor_dim]) % shard_num != 0:
@@ -85,7 +85,7 @@ class Partition:
             for partition in partitions:
                 partitions[partition.rank] = partition.shard(tensor_dim, shard_num, rank_to_coord[partition.rank][mesh_dim])
 
-        return partitions
+        return tuple(partitions)
 
     def from_src(self, src_partition: "Partition") -> Optional["Partition"]:
 
@@ -97,32 +97,51 @@ class Partition:
         return Partition(self.global_shape, start_coord, end_coord, src_partition.rank)
 
     @staticmethod
-    def gen_p2p_info(src_partitions: Tuple["Partition"], tgt_partitions: Tuple["Partition"]) -> Dict[int, List["Partition"]]:
-        recv = defaultdict(list)
+    def gen_p2p_op(rank: int, src_tensor: torch.Tensor, src_partitions: Tuple["Partition"], tgt_partitions: Tuple["Partition"]) -> Tuple[List[dist.P2POp], List[dist.P2POp], torch.Tensor, List[Tuple[slice]]]:
+        local_src_partition = src_partitions[rank]
+        local_dst_partition = tgt_partitions[rank]
+
+        recv_info = defaultdict(list)
         for tgt in tgt_partitions:
             for src in src_partitions:
                 intersection = tgt.from_src(src)
                 if intersection is not None:
-                    recv[tgt.rank].append(intersection)
+                    recv_info[tgt.rank].append(intersection)
 
-        return recv
-
-    @staticmethod
-    def gen_p2p_op(this_rank: int, recv_info: Dict[int, List["Partition"]], tensor: torch.Tensor) -> Tuple[List[dist.P2POp], List[dist.P2POp]]:
         send_ops = []
         recv_ops = []
-
+        recv_slices = []
+        buffer_shape = tuple(e - s for s, e in zip(local_dst_partition.start_coord, local_dst_partition.end_coord))
+        # TODO use empty tensor
+        recv_buffer = torch.empty(buffer_shape, dtype=src_tensor.dtype, device=src_tensor.device) * -10086
         for recv_rank, intersections in recv_info.items():
             for intersection in intersections:
                 send_rank = intersection.rank
-                if this_rank == send_rank == recv_rank:
-                    continue
+                src_slice = tuple(slice(st - base, en - base) for base, st, en in zip(local_src_partition.start_coord, intersection.start_coord, intersection.end_coord))
+                tgt_slice = tuple(slice(st - base, en - base) for base, st, en in zip(local_dst_partition.start_coord, intersection.start_coord, intersection.end_coord))
+                
+                # TODO self send recv can be skipped but batch_isend_irecv only accpets non empy op list
+                # if local_rank == send_rank == recv_rank:
+                #     # assign the static intersection to the buffer
+                #     recv_buffer[tgt_slices] = src_tensor[src_slices]
+                #     continue
 
-                slices = tuple(slice(start, end) for start, end in zip(intersection.start_coord, intersection.end_coord))
-                if this_rank == send_rank:
-                    send_ops.append(dist.P2POp(dist.isend, tensor[slices], recv_rank))
+                if rank == send_rank:
+                    src_slice = tuple(slice(st - base, en - base) for base, st, en in zip(local_src_partition.start_coord, intersection.start_coord, intersection.end_coord))
+                    send_ops.append(dist.P2POp(dist.isend, src_tensor[src_slice].contiguous(), recv_rank))
 
-                if this_rank == recv_rank:  # TODO create tensor recv buffer
-                    recv_ops.append(dist.P2POp(dist.irecv, tensor[slices], send_rank))
+                if rank == recv_rank:  # TODO create tensor recv buffer
+                    tgt_slice = tuple(slice(st - base, en - base) for base, st, en in zip(local_dst_partition.start_coord, intersection.start_coord, intersection.end_coord))
+                    recv_ops.append(dist.P2POp(dist.irecv, recv_buffer[tgt_slice].contiguous(), send_rank))
+                    recv_slices.append(tgt_slice)
 
-        return send_ops, recv_ops
+        return send_ops, recv_ops, recv_buffer, recv_slices
+
+    @staticmethod
+    def fill_recv_buffer(recv_ops: List[dist.P2POp], recv_buffer: torch.Tensor, recv_slices: List[Tuple[slice]]) -> torch.Tensor:
+        for op, slice in zip(recv_ops, recv_slices):
+            if op.op is not dist.irecv:
+                raise ValueError("recv_ops must be irecv")
+            recv_buffer[slice] = op.tensor
+
+        return recv_buffer
