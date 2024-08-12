@@ -135,6 +135,7 @@ class Partition:
 
         # TODO batch_isend_irecv only accpets non empy op list
         if len(send_ops + recv_ops) == 0:
+            # NOTE recv_buffer, recv_slices will still be empty
             dummy_tensor = torch.zeros(1, dtype=src_tensor.dtype, device=src_tensor.device)
             send_ops.append(dist.P2POp(dist.isend, dummy_tensor, rank))
             recv_ops.append(dist.P2POp(dist.irecv, dummy_tensor, rank))

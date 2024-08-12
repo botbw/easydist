@@ -32,11 +32,11 @@ def test(src_placement, tgt_placement):
     for work in works:
         work.wait()
 
-    local_tensor = Partition.fill_recv_buffer(recv_ops, recv_buffer, recv_slices)
+    recv_buffer = Partition.fill_recv_buffer(recv_ops, recv_buffer, recv_slices)
     sleep()
-    print(f"{rank} local_tensor: {local_tensor}")
+    print(f"{rank} recv_buffer: {recv_buffer}")
 
-    assert torch.allclose(local_tensor, tgt_dtensor._local_tensor)
+    assert torch.allclose(recv_buffer, tgt_dtensor._local_tensor)
 
 if __name__ == "__main__":
     test([Shard(1), Shard(0)], [Shard(0), Shard(1)])
