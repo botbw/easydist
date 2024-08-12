@@ -40,7 +40,7 @@ class Partition:
             raise ValueError("global_shape, start_coord and end_coord must have the same length")
 
     def __repr__(self) -> str:
-        return f"{{{self.start_coord}->{self.end_coord} {self.rank}}}"
+        return f"{{{self.start_coord}->{self.end_coord} on rank{self.rank}}}"
 
     def shard(self, tensor_dim: int, shard_num: int, shard_idx: int) -> "Partition":
         if (self.end_coord[tensor_dim] - self.start_coord[tensor_dim]) % shard_num != 0:
@@ -49,8 +49,8 @@ class Partition:
         block_size = (self.end_coord[tensor_dim] - self.start_coord[tensor_dim]) // shard_num
         return Partition(
             self.global_shape,
-            self.start_coord[:tensor_dim] + (block_size * shard_idx,) + self.start_coord[tensor_dim+1:],
-            self.end_coord[:tensor_dim] + (block_size * (shard_idx + 1),) + self.end_coord[tensor_dim+1:],
+            self.start_coord[:tensor_dim] + (self.start_coord[tensor_dim] + block_size * shard_idx,) + self.start_coord[tensor_dim+1:],
+            self.end_coord[:tensor_dim] + (self.start_coord[tensor_dim] + block_size * (shard_idx + 1),) + self.end_coord[tensor_dim+1:],
             self.rank
         )
 
@@ -73,7 +73,7 @@ class Partition:
                 tuple(unravel[j][i].item() for j in range(tensor_mesh.ndim))
             )
         partitions = [
-            Partition(global_shape, (0,) * len(global_shape), global_shape, rank) for rank in tensor_mesh.flatten().tolist()
+            Partition(global_shape, (0,) * len(global_shape), tuple(global_shape), rank) for rank in tensor_mesh.flatten().tolist()
         ]
 
         for mesh_dim, placement in enumerate(placements):
@@ -112,19 +112,17 @@ class Partition:
         recv_ops = []
         recv_slices = []
         buffer_shape = tuple(e - s for s, e in zip(local_dst_partition.start_coord, local_dst_partition.end_coord))
-        # TODO use empty tensor
         recv_buffer = torch.empty(buffer_shape, dtype=src_tensor.dtype, device=src_tensor.device) * -10086
         for recv_rank, intersections in recv_info.items():
             for intersection in intersections:
                 send_rank = intersection.rank
                 src_slice = tuple(slice(st - base, en - base) for base, st, en in zip(local_src_partition.start_coord, intersection.start_coord, intersection.end_coord))
                 tgt_slice = tuple(slice(st - base, en - base) for base, st, en in zip(local_dst_partition.start_coord, intersection.start_coord, intersection.end_coord))
-                
-                # TODO self send recv can be skipped but batch_isend_irecv only accpets non empy op list
-                # if local_rank == send_rank == recv_rank:
-                #     # assign the static intersection to the buffer
-                #     recv_buffer[tgt_slices] = src_tensor[src_slices]
-                #     continue
+
+                if rank == send_rank == recv_rank:
+                    # assign the static intersection to the buffer
+                    recv_buffer[tgt_slice] = src_tensor[src_slice]
+                    continue
 
                 if rank == send_rank:
                     src_slice = tuple(slice(st - base, en - base) for base, st, en in zip(local_src_partition.start_coord, intersection.start_coord, intersection.end_coord))
@@ -134,6 +132,12 @@ class Partition:
                     tgt_slice = tuple(slice(st - base, en - base) for base, st, en in zip(local_dst_partition.start_coord, intersection.start_coord, intersection.end_coord))
                     recv_ops.append(dist.P2POp(dist.irecv, recv_buffer[tgt_slice].contiguous(), send_rank))
                     recv_slices.append(tgt_slice)
+
+        # TODO batch_isend_irecv only accpets non empy op list
+        if len(send_ops + recv_ops) == 0:
+            dummy_tensor = torch.zeros(1, dtype=src_tensor.dtype, device=src_tensor.device)
+            send_ops.append(dist.P2POp(dist.isend, dummy_tensor, rank))
+            recv_ops.append(dist.P2POp(dist.irecv, dummy_tensor, rank))
 
         return send_ops, recv_ops, recv_buffer, recv_slices
 
