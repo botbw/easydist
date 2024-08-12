@@ -103,10 +103,16 @@ class Partition:
 
         recv_info = defaultdict(list)
         for tgt in tgt_partitions:
-            for src in src_partitions:
+            cache = defaultdict(int)
+            # TODO better load balance strategy
+            for src in sorted(src_partitions, key=lambda x: abs(x.rank - tgt.rank)):
                 intersection = tgt.from_src(src)
-                if intersection is not None:
+                if intersection is None:
+                    continue
+                cache_str = f"{intersection.start_coord}{intersection.end_coord}"
+                if cache_str not in cache:
                     recv_info[tgt.rank].append(intersection)
+                cache[cache_str] += 1
 
         send_ops = []
         recv_ops = []
@@ -128,14 +134,14 @@ class Partition:
                     src_slice = tuple(slice(st - base, en - base) for base, st, en in zip(local_src_partition.start_coord, intersection.start_coord, intersection.end_coord))
                     send_ops.append(dist.P2POp(dist.isend, src_tensor[src_slice].contiguous(), recv_rank))
 
-                if rank == recv_rank:  # TODO create tensor recv buffer
+                if rank == recv_rank:
                     tgt_slice = tuple(slice(st - base, en - base) for base, st, en in zip(local_dst_partition.start_coord, intersection.start_coord, intersection.end_coord))
                     recv_ops.append(dist.P2POp(dist.irecv, recv_buffer[tgt_slice].contiguous(), send_rank))
                     recv_slices.append(tgt_slice)
 
-        # TODO batch_isend_irecv only accpets non empy op list
+        # TODO: handle the case where there is no communication, currently sending a dummy tensor
         if len(send_ops + recv_ops) == 0:
-            # NOTE recv_buffer, recv_slices will still be empty
+            # NOTE: recv_buffer, recv_slices will still be empty
             dummy_tensor = torch.zeros(1, dtype=src_tensor.dtype, device=src_tensor.device)
             send_ops.append(dist.P2POp(dist.isend, dummy_tensor, rank))
             recv_ops.append(dist.P2POp(dist.irecv, dummy_tensor, rank))

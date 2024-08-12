@@ -33,7 +33,7 @@ def bench(src_placement, tgt_placement):
     tgt_partitions = Partition.from_tensor_spec(tgt_dtensor._spec)
 
     send_ops, recv_ops, recv_buffer, recv_slices = Partition.gen_p2p_op(rank, src_dtensor._local_tensor, src_partitions, tgt_partitions)
-    
+
     start_t = time()
     torch.cuda.reset_max_memory_allocated()
     torch.cuda.synchronize()
