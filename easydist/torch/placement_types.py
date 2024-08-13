@@ -8,8 +8,7 @@ from typing import Dict, NamedTuple, cast, List, Optional, Tuple
 import torch
 import torch.distributed as dist
 
-from torch.distributed._tensor import Shard
-from torch.distributed._tensor.placement_types import DTensorSpec
+from torch.distributed._tensor.placement_types import DTensorSpec, _Partial, Shard
 
 
 class TensorMeta(NamedTuple):
@@ -30,14 +29,9 @@ class Partition:
     '''
         Tensor partition from a logical view, and the rank that holds it.
     '''
-    global_shape: torch.Size  # logical shape of tensor
     start_coord: Tuple[int, ...]  # start coord of this partition
     end_coord: Tuple[int, ...]  # end coord of this partition
     rank: int  # rank that hold this partition
-
-    def __post_init__(self):
-        if len(self.global_shape) != len(self.start_coord) or len(self.global_shape) != len(self.end_coord):
-            raise ValueError("global_shape, start_coord and end_coord must have the same length")
 
     def __repr__(self) -> str:
         return f"{{{self.start_coord}->{self.end_coord} on rank{self.rank}}}"
@@ -48,7 +42,6 @@ class Partition:
 
         block_size = (self.end_coord[tensor_dim] - self.start_coord[tensor_dim]) // shard_num
         return Partition(
-            self.global_shape,
             self.start_coord[:tensor_dim] + (self.start_coord[tensor_dim] + block_size * shard_idx,) + self.start_coord[tensor_dim+1:],
             self.end_coord[:tensor_dim] + (self.start_coord[tensor_dim] + block_size * (shard_idx + 1),) + self.end_coord[tensor_dim+1:],
             self.rank
@@ -63,9 +56,6 @@ class Partition:
         global_shape, _, _ = spec.tensor_meta
         placements = spec.placements
 
-        if any(p.is_partial() for p in placements):
-            raise ValueError("Partition does not support Partial placement")
-
         unravel = torch.unravel_index(torch.arange(tensor_mesh.numel()), tensor_mesh.shape)
         rank_to_coord = []
         for i in range(unravel[0].shape[0]):
@@ -73,7 +63,7 @@ class Partition:
                 tuple(unravel[j][i].item() for j in range(tensor_mesh.ndim))
             )
         partitions = [
-            Partition(global_shape, (0,) * len(global_shape), tuple(global_shape), rank) for rank in tensor_mesh.flatten().tolist()
+            Partition((0,) * len(global_shape), tuple(global_shape), rank) for rank in tensor_mesh.flatten().tolist()
         ]
 
         for mesh_dim, placement in enumerate(placements):
@@ -94,7 +84,7 @@ class Partition:
         if any(s >= e for s, e in zip(start_coord, end_coord)):
             return None
 
-        return Partition(self.global_shape, start_coord, end_coord, src_partition.rank)
+        return Partition(start_coord, end_coord, src_partition.rank)
 
     @staticmethod
     def gen_p2p_op(rank: int, src_tensor: torch.Tensor, src_partitions: Tuple["Partition"], tgt_partitions: Tuple["Partition"]) -> Tuple[List[dist.P2POp], List[dist.P2POp], torch.Tensor, List[Tuple[slice]]]:
