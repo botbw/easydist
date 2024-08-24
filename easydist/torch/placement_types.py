@@ -32,9 +32,10 @@ class Partition:
     start_coord: Tuple[int, ...]  # start coord of this partition
     end_coord: Tuple[int, ...]  # end coord of this partition
     rank: int  # rank that hold this partition
+    partial_coord: Tuple[int, ...]  # partial coord of this partition
 
     def __repr__(self) -> str:
-        return f"{{{self.start_coord}->{self.end_coord} on rank{self.rank}}}"
+        return f"{{{self.start_coord}->{self.end_coord} partial {self.partial_coord} on rank{self.rank}}}"
 
     def shard(self, tensor_dim: int, shard_num: int, shard_idx: int) -> "Partition":
         if (self.end_coord[tensor_dim] - self.start_coord[tensor_dim]) % shard_num != 0:
@@ -44,8 +45,12 @@ class Partition:
         return Partition(
             self.start_coord[:tensor_dim] + (self.start_coord[tensor_dim] + block_size * shard_idx,) + self.start_coord[tensor_dim+1:],
             self.end_coord[:tensor_dim] + (self.start_coord[tensor_dim] + block_size * (shard_idx + 1),) + self.end_coord[tensor_dim+1:],
-            self.rank
+            self.rank,
+            self.partial_coord
         )
+
+    def partial(self, new_partial_idx: int) -> "Partition":
+        return Partition(self.start_coord, self.end_coord, self.rank, self.partial_coord + (new_partial_idx,))
 
     @staticmethod
     def from_tensor_spec(spec: DTensorSpec) -> Tuple["Partition"]:
@@ -63,28 +68,30 @@ class Partition:
                 tuple(unravel[j][i].item() for j in range(tensor_mesh.ndim))
             )
         partitions = [
-            Partition((0,) * len(global_shape), tuple(global_shape), rank) for rank in tensor_mesh.flatten().tolist()
+            Partition((0,) * len(global_shape), tuple(global_shape), rank, tuple()) for rank in tensor_mesh.flatten().tolist()
         ]
 
         for mesh_dim, placement in enumerate(placements):
-            if not placement.is_shard():
-                continue
-            shard = cast(Shard, placement)
-            tensor_dim = shard.dim
-            shard_num = tensor_mesh.size(mesh_dim)
-            for partition in partitions:
-                partitions[partition.rank] = partition.shard(tensor_dim, shard_num, rank_to_coord[partition.rank][mesh_dim])
-
+            if placement.is_shard():
+                shard = cast(Shard, placement)
+                tensor_dim = shard.dim
+                shard_num = tensor_mesh.size(mesh_dim)
+                for partition in partitions:
+                    partitions[partition.rank] = partition.shard(tensor_dim, shard_num, rank_to_coord[partition.rank][mesh_dim])
+            elif placement.is_partial():
+                partial = cast(_Partial, placement)
+                for partition in partitions:
+                    partitions[partition.rank] = partition.partial(rank_to_coord[partition.rank][mesh_dim])
         return tuple(partitions)
 
     def from_src(self, src_partition: "Partition") -> Optional["Partition"]:
 
         start_coord = tuple(max(s1, s2) for s1, s2 in zip(self.start_coord, src_partition.start_coord))
         end_coord = tuple(min(e1, e2) for e1, e2 in zip(self.end_coord, src_partition.end_coord))
-        if any(s >= e for s, e in zip(start_coord, end_coord)):
+        if any(s >= e for s, e in zip(start_coord, end_coord)) or src_partition.partial_coord != self.partial_coord:
             return None
 
-        return Partition(start_coord, end_coord, src_partition.rank)
+        return Partition(start_coord, end_coord, src_partition.rank, src_partition.partial_coord)
 
     @staticmethod
     def gen_p2p_op(rank: int, src_tensor: torch.Tensor, src_partitions: Tuple["Partition"], tgt_partitions: Tuple["Partition"]) -> Tuple[List[dist.P2POp], List[dist.P2POp], torch.Tensor, List[Tuple[slice]]]:
