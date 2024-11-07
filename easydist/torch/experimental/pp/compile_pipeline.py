@@ -359,7 +359,7 @@ class CompiledStage:
             )
             self.optim_grads = stage_optim_input_grads
             self.step_func_args = stage_optim_input_params | stage_optim_input_grads | stage_optim_input_states
-            self.stage_step_gm = _extract_step_subgraph_from_args(full_step_gm, self.step_func_args)
+            self.stage_step_gm = _extract_step_subgraph_from_args(full_step_gm, self.step_func_args, compiled_meta)
             save_graphviz_dot(self.stage_step_gm.gm, self.fw_gm.name + '(step)')
 
     @torch.no_grad
@@ -633,7 +633,7 @@ def split_by(traced: torch.fx.GraphModule, split_point: Callable):
     return split, part_idx + 1
 
 
-def _extract_step_subgraph_from_args(ed_gm: EDGraphModule, inputs_spec: Set[str]):
+def _extract_step_subgraph_from_args(ed_gm: EDGraphModule, inputs_spec: Set[str], compiled_meta: CompiledMeta):
     new_graph = fx.Graph()
     env = {}
     outputs = []
@@ -736,17 +736,20 @@ def _extract_step_subgraph_from_args(ed_gm: EDGraphModule, inputs_spec: Set[str]
             raise RuntimeError(f"op {node.op} not supported")
 
     new_graph.output(tuple(outputs))
-
     new_graph.eliminate_dead_code()
     new_graph.lint()
+
     new_gm = fx.GraphModule(gm, new_graph)
 
     injected_states = StateType.get_empty_dict()
     to_pop = []
     for name, val in ed_gm.node_states[StateType.OPTIMSTATES].items():
-        if name in inputs_spec:
+        step_input_name = compiled_meta.input_node_to_step_input_named_states.inv(name)
+        print(f"{step_input_name} {inputs_spec}")
+        if step_input_name in inputs_spec:
             injected_states[StateType.OPTIMSTATES][name] = val
             to_pop.append(name)
+    print(f"{to_pop=}")
     for name in to_pop:
         ed_gm.node_states[StateType.OPTIMSTATES].pop(name)
 
