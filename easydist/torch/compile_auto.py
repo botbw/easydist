@@ -55,7 +55,7 @@ from easydist.torch.schedule.efficient_memory_scheduler import EfficientMemorySc
 from easydist.torch.schedule.graph_mem_plan import GraphMemPlan
 from easydist.torch.sharding_interpreter import EDTorchShardingAnn
 from easydist.torch.compile import ed_compile_func, stateless_func
-from easydist.torch.utils import (_enable_compile, _sharding_ann_env, extract_tensor_meta_info)
+from easydist.torch.utils import (_enable_compile, _sharding_ann_env, do_spmd_comm)
 from easydist.utils.testing.mock import TorchMockDeviceMesh
 from easydist.torch.mem_allocation_info import OutVar
 import easydist.torch.profiler.stream_tracer as ed_stream_tracer
@@ -800,19 +800,54 @@ def _compile_auto(func,
             return sharded_fx_module
 
         def parameters(self):
-            return params.values()
+            gathered = []
+            for idx, param_name in enumerate(params):
+                src_specs = params_strategy[idx]
+                tgt_specs = [Replicate()] * len(src_specs)
+                tensor = do_spmd_comm(params[param_name], src_specs, tgt_specs)
+                gathered.append(tensor)
+            return iter(gathered)
 
         def named_parameters(self):
-            return params
+            gathered = {}
+            for idx, param_name in enumerate(params):
+                src_specs = params_strategy[idx]
+                tgt_specs = [Replicate()] * len(src_specs)
+                tensor = do_spmd_comm(params[param_name], src_specs, tgt_specs)
+                gathered[param_name] = tensor
+            return gathered
 
         def buffers(self):
-            return buffers.values()
+            gathered = []
+            for idx, buffer_name in enumerate(buffers):
+                src_specs = buffers_strategy[idx]
+                tgt_specs = [Replicate()] * len(src_specs)
+                tensor = do_spmd_comm(buffers[buffer_name], src_specs, tgt_specs)
+                gathered.append(tensor)
+            return iter(gathered)
 
         def named_buffers(self):
-            return buffers
+            gathered = {}
+            for idx, buffer_name in enumerate(buffers):
+                src_specs = buffers_strategy[idx]
+                tgt_specs = [Replicate()] * len(src_specs)
+                tensor = do_spmd_comm(buffers[buffer_name], src_specs, tgt_specs)
+                gathered[buffer_name] = tensor
+            return gathered
 
         def _optimizer_state_dict(self):
-            return named_states
+            gathered = []
+            flat_named_states, named_states_spec = pytree.tree_flatten(named_states)
+            state_tensor_num = len(params) + len(buffers)
+            for i in range(len(flat_named_states)):
+                if isinstance(flat_named_states[i], torch.Tensor):
+                    src_specs = args_strategy[state_tensor_num]
+                    tgt_specs = [Replicate()] * len(src_specs)
+                    gathered.append(
+                        do_spmd_comm(flat_named_states[i], src_specs, tgt_specs)
+                    )
+                    state_tensor_num += 1
+            return pytree.tree_unflatten(gathered, named_states_spec)
 
     # release all cuda memory from module here
     # the param maintain in the local of compiled function.

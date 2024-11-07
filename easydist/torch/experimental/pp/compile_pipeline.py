@@ -37,10 +37,10 @@ from easydist.torch.experimental.pp.split_utils import (
 from easydist.torch.experimental.pp.utils import (
     OneToOneMap,
     _to_tuple,
-    do_spmd_comm,
     ordered_gi_users,
     save_graphviz_dot,
 )
+from easydist.torch.utils import do_spmd_comm
 from easydist.utils import rgetattr, rsetattr
 
 # ================================= section start ========================================
@@ -356,7 +356,7 @@ class CompiledStage:
                 ) for node_name in stage_param_nodes for state_type in compiled_meta.optim_state_types
             )
             self.optim_grads = stage_optim_input_grads
-            self.step_func_args = (stage_optim_input_params | stage_optim_input_grads) | stage_optim_input_states
+            self.step_func_args = stage_optim_input_params | stage_optim_input_grads | stage_optim_input_states
             self.stage_step_gm = _extract_step_subgraph_from_args(full_step_gm, self.step_func_args)
             save_graphviz_dot(self.stage_step_gm.gm, self.fw_gm.name + '(step)')
 
@@ -475,12 +475,6 @@ class CompiledStage:
 
         return None
 
-    def has_step(self):
-        return hasattr(self, 'step_gm')
-
-    def has_bw(self):
-        return hasattr(self, 'bw_gm')
-
     def state_dict(self) -> Dict[str, Any]:
         state_dict = {}
         state_dict.update(self.named_parameters())
@@ -535,6 +529,7 @@ class CompiledStage:
             for node_name, tensor in self.fw_gm.node_states[StateType.PARAMS].items():
                 src_specs = self.compiled_meta.tensors_spmd_strategies[node_name]
                 tgt_specs = [Replicate()] * len(src_specs)
+                print(f"{self.compiled_meta.input_params_map.inv_get(node_name)} {node_name=} {src_specs=} {tgt_specs=}")
                 tensor = do_spmd_comm(tensor, src_specs, tgt_specs)
                 torch_name = self.compiled_meta.input_params_map.inv_get(node_name)
                 params[torch_name] = tensor
@@ -973,6 +968,7 @@ def compile_pipeline(
         input_node_to_step_input_grads = OneToOneMap.from_dict({
             input_node_to_step_input_params.inv_get(param_node_name): grad_node_name for param_node_name, grad_node_name in zip(step_gm_phs[:num_params], step_gm_phs[num_params:2*num_params])
         })
+
 
     # meta data
     compiled_meta = CompiledMeta(

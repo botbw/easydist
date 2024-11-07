@@ -12,32 +12,35 @@
 # limitations under the License.
 # ==============================================================================
 
-import hashlib
-from contextlib import contextmanager
 import copy
-import numpy as np
+import hashlib
 import random
-from typing import Any, Dict
-from enum import Enum
+from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, List
 
+import numpy as np
 import torch
-from torch._subclasses.fake_tensor import FakeTensor
 import torch.distributed.distributed_c10d as c10d
+from torch._subclasses.fake_tensor import FakeTensor
+from torch.distributed._tensor import DTensor
+
 if torch.__version__ >= (2, 4):
     import torch.distributed.tensor as spmd
     from torch.distributed.tensor._utils import compute_local_shape
 else:
     import torch.distributed._tensor as spmd
     from torch.distributed._tensor.ops.view_ops import compute_local_shape
-from torch.distributed._tensor.placement_types import DTensorSpec
-from torch.utils._mode_utils import no_dispatch
-import torch.utils._pytree as pytree
-from torch.fx.passes.shape_prop import _extract_tensor_metadata
-from torch._guards import detect_fake_mode
 
-from easydist.metashard.combination import ReduceOp
+import torch.utils._pytree as pytree
+from torch._guards import detect_fake_mode
+from torch.distributed._tensor.placement_types import DTensorSpec, Placement
+from torch.fx.passes.shape_prop import _extract_tensor_metadata
+from torch.utils._mode_utils import no_dispatch
+
 from easydist.metashard import metair
+from easydist.metashard.combination import ReduceOp
 from easydist.metashard.metair import NodeSPMDStrategy
 from easydist.torch.device_mesh import get_device_mesh
 
@@ -255,3 +258,9 @@ def seed(seed=42):
     # Set(seed) for each of the random number generators in python:
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def do_spmd_comm(tensor, src_specs: List[Placement], tgt_specs: List[Placement]):
+    device_mesh = get_device_mesh('spmd')
+    dtensor = DTensor.from_local(tensor, device_mesh, src_specs)
+    return dtensor.redistribute(device_mesh, tgt_specs).to_local()
