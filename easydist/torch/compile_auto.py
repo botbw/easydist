@@ -45,11 +45,10 @@ from easydist.torch.experimental.pp.utils import save_graphviz_dot
 from easydist.torch.init_helper import (init_contiguous_buf, materialize_zero)
 from easydist.torch.passes import (eliminate_detach, fix_addmm_bias, fix_convoluation_bias, decouple_view,
                                    tile_comm, runtime_prof, fix_embedding, fix_meta_device,
-                                   sharding_transform, sharding_transform_dtensor,
+                                   sharding_transform, sharding_transform_dtensor, get_partition,
                                    AllocatorProfiler, ModuleProfilingInfo)
 from easydist.torch.device_mesh import get_device_mesh
 from easydist.torch.passes import comm_optimize, rule_override_by_graph, create_edinfo
-from easydist.torch.passes.fix_node_order import fix_node_order
 from easydist.torch.schedule.ilp_memory_scheduler import ILPMemoryScheduler
 from easydist.torch.schedule.efficient_memory_scheduler import EfficientMemoryScheduler
 from easydist.torch.schedule.graph_mem_plan import GraphMemPlan
@@ -483,6 +482,8 @@ def _compile_auto(func,
 
     params, buffers, named_states, state_tensor_num, traced_graph = ed_compile_func(func, tracing_mode, init_helper, args, kwargs, schedule_cls, module, opt)
     traced_graph = preprocess_traced_graph(traced_graph)
+    if schedule_cls:  # for pp, record current node partitions for later sanity check
+        orig_partitions = get_partition(traced_graph)
 
     if mdconfig.dump_fx_graph:
         print(f"node num in traced graph: {len(traced_graph.graph.nodes)}")
@@ -545,9 +546,6 @@ def _compile_auto(func,
 
     rpc.shutdown()
 
-    #if rank == 0:
-    #    print(f"traced_graph._code: {traced_graph._code}")
-
     if mdconfig.dump_strategy and rank==0:
         nodes_shape_info = "shape info:\n"
         for node in traced_graph.graph.nodes:
@@ -575,7 +573,7 @@ def _compile_auto(func,
     sharded_gm = fix_embedding(sharded_gm, recover=True)
 
     if not mdconfig.use_dtensor:
-        if schedule_cls is None and mdconfig.comm_optimization is True:
+        if schedule_cls is None and mdconfig.comm_optimization is True:  # TODO @botbw: for pp, optimize comm within stage
             sharded_gm = runtime_prof(sharded_gm)
             sharded_gm = comm_optimize(sharded_gm, 'rcpsp', grouping=True, mem_restrain=False)
 
@@ -681,13 +679,16 @@ def _compile_auto(func,
     named_states = pytree.tree_unflatten(flat_named_states, named_states_spec)
 
     if schedule_cls is not None:
+        cur_node_partitions = get_partition(sharded_gm)
+        for i, (org, cur) in enumerate(zip(orig_partitions, cur_node_partitions)):
+            assert org.issubset(cur), f"Some passes might reordered the linear sequence of nodes, which lead to different partitions: {i} {org} {cur} {org - cur}"
+
         pp_mesh = get_device_mesh('pp')
         pp_rank, pp_size = pp_mesh.get_coordinate()[0], pp_mesh.size()
         traced_graph_node_metas = {
             node.name: node.meta
             for node in traced_graph.graph.nodes
         }
-        sharded_gm = fix_node_order(sharded_gm)
         stateless_func_args = (params, buffers, named_states, args, kwargs)
         pp_compiled_meta, pp_compiled_stages, pp_local_gm, _ = compile_pipeline(
             sharded_gm,

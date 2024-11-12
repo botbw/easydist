@@ -264,3 +264,19 @@ def do_spmd_comm(tensor, src_specs: List[Placement], tgt_specs: List[Placement])
     device_mesh = get_device_mesh('spmd')
     dtensor = DTensor.from_local(tensor, device_mesh, src_specs)
     return dtensor.redistribute(device_mesh, tgt_specs).to_local()
+
+
+def _link_nodes(fx_module, node_list):
+    '''
+    Change the sequential order of fx_module according to node_list
+    '''
+
+    fx_module.graph._root._next = node_list[0]
+    node_list[0]._prev = fx_module.graph._root
+    for idx, node in enumerate(node_list[:-1]):
+        node._next = node_list[idx + 1]
+        node_list[idx + 1]._prev = node
+    node_list[-1]._next = fx_module.graph._root
+    fx_module.graph._root._prev = node_list[-1]
+    fx_module.graph.eliminate_dead_code()
+    fx_module.recompile()
