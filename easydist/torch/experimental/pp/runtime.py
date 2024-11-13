@@ -24,6 +24,7 @@ import torch.distributed as dist
 import torch.fx as fx
 import torch.utils._pytree as pytree
 from torch._subclasses.fake_tensor import FakeTensor
+from torch.distributed._tensor import Replicate
 
 from easydist.torch.experimental.pp.compile_pipeline import (
     CompiledMeta,
@@ -37,7 +38,9 @@ from easydist.torch.experimental.pp.microbatch import (
     merge_chunks,
     split_args_kwargs_into_chunks,
 )
+from easydist.torch.utils import do_spmd_comm
 from easydist.torch.init_helper import materialize_zero
+from easydist.torch.device_mesh import get_device_mesh
 
 logger = logging.getLogger(__name__)
 
@@ -548,9 +551,18 @@ class PipelineStage(RuntimeMixin):
         # Clean per iteration
         self.reset_and_check_runtime_states()
 
+        # TODO @botbw: check TODO in compiled.py: compiled_func
         args_kwargs_vals_flatten, spec_val = pytree.tree_flatten((args, kwargs))
         args_kwargs_nodes_flatten, spec_node = pytree.tree_flatten(
             (self.compiled_meta.args_nodes_unflatten, self.compiled_meta.kwargs_nodes_unflatten))
+        if self.compiled_meta.tensors_spmd_strategies:
+            device_mesh = get_device_mesh('spmd')
+            for i, (node_name, val) in enumerate(zip(args_kwargs_nodes_flatten, args_kwargs_vals_flatten)):
+                if isinstance(val, torch.Tensor):
+                    src_specs = [Replicate()] * device_mesh.mesh.dim()
+                    tgt_specs = self.compiled_meta.tensors_spmd_strategies[node_name]
+                    args_kwargs_vals_flatten[i] = do_spmd_comm(val, src_specs, tgt_specs)
+            args, kwargs = pytree.tree_unflatten(args_kwargs_vals_flatten, spec_val)
         assert spec_val == spec_node, "Mismatched args/kwargs"
 
         input_node_vals = {}

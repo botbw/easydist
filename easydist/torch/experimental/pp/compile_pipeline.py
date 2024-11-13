@@ -486,8 +486,8 @@ class CompiledStage:
         for torch_name, tensor in state_dict.items():
             node_name = self.compiled_meta.input_params_map.get(torch_name)
             if node_name in self.compiled_meta.tensors_spmd_strategies:
-                src_specs = [Replicate()] * len(src_specs)
                 tgt_specs = self.compiled_meta.tensors_spmd_strategies[node_name]
+                src_specs = [Replicate()] * len(tgt_specs)
                 tensor = do_spmd_comm(tensor, src_specs, tgt_specs)
             self.fw_gm.node_states[StateType.PARAMS][node_name] = tensor
             to_pop.append(torch_name)
@@ -499,8 +499,8 @@ class CompiledStage:
         for torch_name, tensor in state_dict.items():
             node_name = self.compiled_meta.input_buffers_map.get(torch_name)
             if node_name in self.compiled_meta.tensors_spmd_strategies:
-                src_specs = [Replicate()] * len(src_specs)
                 tgt_specs = self.compiled_meta.tensors_spmd_strategies[node_name]
+                src_specs = [Replicate()] * len(tgt_specs)
                 tensor = do_spmd_comm(tensor, src_specs, tgt_specs)
             self.fw_gm.node_states[StateType.BUFFERS][node_name] = tensor
             to_pop.append(torch_name)
@@ -518,8 +518,8 @@ class CompiledStage:
             for state_type, tensor in states.items():
                 node_name = self.compiled_meta.input_optimstates_map.get((torch_name, state_type))
                 if node_name in self.compiled_meta.tensors_spmd_strategies:
-                    src_specs = [Replicate()] * len(src_specs)
                     tgt_specs = self.compiled_meta.tensors_spmd_strategies[node_name]
+                    src_specs = [Replicate()] * len(tgt_specs)
                     tensor = do_spmd_comm(tensor, src_specs, tgt_specs)
                 self.stage_step_gm.node_states[StateType.OPTIMSTATES][node_name] = tensor
 
@@ -529,7 +529,6 @@ class CompiledStage:
             for node_name, tensor in self.fw_gm.node_states[StateType.PARAMS].items():
                 src_specs = self.compiled_meta.tensors_spmd_strategies[node_name]
                 tgt_specs = [Replicate()] * len(src_specs)
-                print(f"{self.compiled_meta.input_params_map.inv_get(node_name)} {node_name=} {src_specs=} {tgt_specs=}")
                 tensor = do_spmd_comm(tensor, src_specs, tgt_specs)
                 torch_name = self.compiled_meta.input_params_map.inv_get(node_name)
                 params[torch_name] = tensor

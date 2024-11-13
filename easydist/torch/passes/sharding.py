@@ -741,7 +741,7 @@ def insert_comm_node(fx_module: torch.fx.GraphModule,
                                                                     args=(var_, num_chunks,
                                                                         target.args["dim"],
                                                                         my_coordinate[i]))
-                node.replace_input_with(var_, scatter_node)
+                    node.replace_input_with(var_, scatter_node)
                 var_ = scatter_node
             elif current.is_shard():
                 if current.args["dim"] != target.args["dim"]:
@@ -756,7 +756,7 @@ def insert_comm_node(fx_module: torch.fx.GraphModule,
                             all_to_all_end,
                             args=(all_to_all_start_node, current.args["dim"], target.args["dim"],
                                     num_chunks, my_coordinate[i], ranks))
-                    node.replace_input_with(var_, all_to_all_end_node)
+                        node.replace_input_with(var_, all_to_all_end_node)
                     var_ = all_to_all_end_node
             elif current.is_partial():
                 # reduce_scatter
@@ -769,7 +769,7 @@ def insert_comm_node(fx_module: torch.fx.GraphModule,
                     reduce_scatter_end_node = fx_module.graph.call_function(
                         reduce_scatter_end,
                         args=(reduce_scatter_start_node, reduceOp, target.args["dim"], ranks))
-                node.replace_input_with(var_, reduce_scatter_end_node)
+                    node.replace_input_with(var_, reduce_scatter_end_node)
                 var_ = reduce_scatter_end_node
         elif target.is_replicate():
             if current.is_shard():
@@ -781,7 +781,7 @@ def insert_comm_node(fx_module: torch.fx.GraphModule,
                 with fx_module.graph.inserting_after(all_gather_start_node):
                     all_gather_end_node = fx_module.graph.call_function(
                         all_gather_end, args=(all_gather_start_node, current.args["dim"], ranks))
-                node.replace_input_with(var_, all_gather_end_node)
+                    node.replace_input_with(var_, all_gather_end_node)
                 var_ = all_gather_end_node
             elif current.is_partial():
                 # insert all_reduce here
@@ -793,7 +793,7 @@ def insert_comm_node(fx_module: torch.fx.GraphModule,
                 with fx_module.graph.inserting_after(all_reduce_start_node):
                     all_reduce_end_node = fx_module.graph.call_function(
                         all_reduce_end, args=(all_reduce_start_node, reduceOp, ranks))
-                node.replace_input_with(var_, all_reduce_end_node)
+                    node.replace_input_with(var_, all_reduce_end_node)
                 var_ = all_reduce_end_node
 
     if mdconfig.experimental_sharding_transform == 'P2P' and src_specs != tgt_specs:
@@ -983,9 +983,8 @@ def sharding_transform(fx_module: torch.fx.GraphModule, opt_strategy, state_io_m
                             copy_innode=all_placeholder_node[in_node.name])
 
     # 3. restore placeholders order
-    phs = [node for node in fx_module.graph.nodes if node.op == 'placeholder']
-    others = [node for node in fx_module.graph.nodes if node.op != 'placeholder']
-    _link_nodes(fx_module, phs + others)
+    # phs still keep the original order 
+    _link_nodes(fx_module, phs + [node for node in fx_module.graph.nodes if node.op != 'placeholder'])
     fx_module.recompile()
 
     # (TODO) move this part out of this pass
