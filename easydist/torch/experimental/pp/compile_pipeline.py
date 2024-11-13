@@ -469,7 +469,7 @@ class CompiledStage:
 
         if saved_params_step is None or saved_grads_step is None:
             assert saved_params_step is None and saved_grads_step is None
-            saved_params_step = self.saved_tensors_step
+            saved_params_step = self.saved_params_step
             saved_grads_step = self.saved_grads_step
 
         with torch.profiler.record_function("actual_compute"):
