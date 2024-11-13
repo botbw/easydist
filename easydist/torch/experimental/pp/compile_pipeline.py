@@ -313,7 +313,6 @@ class EDGraphModule:
     def __call__(self, *args, **kwargs):
         return self.gm(*args, **kwargs)
 
-
 class CompiledStage:
 
     def __init__(self,
@@ -344,10 +343,10 @@ class CompiledStage:
 
         if full_step_gm is not None:
             self.has_step = True
-            stage_optim_input_params = set(
+            self.stage_optim_input_params = set(
                 compiled_meta.input_node_to_step_input_params.get(node_name) for node_name in stage_param_nodes
             )
-            stage_optim_input_grads = set(
+            self.stage_optim_input_grads = set(
                 compiled_meta.input_node_to_step_input_grads.get(node_name) for node_name in stage_param_nodes
             )
             stage_optim_input_states = set(
@@ -355,20 +354,22 @@ class CompiledStage:
                     (compiled_meta.input_params_map.inv_get(node_name), state_type)
                 ) for node_name in stage_param_nodes for state_type in compiled_meta.optim_state_types
             )
-            self.optim_grads = stage_optim_input_grads
-            self.step_func_args = stage_optim_input_params | stage_optim_input_grads | stage_optim_input_states
+            self.optim_grads = self.stage_optim_input_params
+            self.step_func_args = self.stage_optim_input_params | self.stage_optim_input_grads | stage_optim_input_states
             self.stage_step_gm = _extract_step_subgraph_from_args(full_step_gm, self.step_func_args)
             save_graphviz_dot(self.stage_step_gm.gm, self.fw_gm.name + '(step)')
 
     @torch.no_grad
-    def forward(self, saved_tensors_bw: Optional[Dict]=None, returns_chunk: Optional[Dict]=None, **kwargs):
+    def forward(self, saved_tensors_bw: Optional[Dict]=None, saved_params_step: Optional[Dict]=None, returns_chunk: Optional[Dict]=None, **kwargs):
         assert set(kwargs.keys()) == self.fw_func_args, f"known kwargs {kwargs}, {self.fw_func_args} are required"
 
-        if saved_tensors_bw is None or returns_chunk is None:  # for local run
-            assert saved_tensors_bw is None and returns_chunk is None
+        if saved_tensors_bw is None or returns_chunk is None or saved_params_step is None:  # for local run
+            assert saved_tensors_bw is None and returns_chunk is None and saved_params_step is None
             self.saved_tensors_bw = {}
+            self.saved_params_step = {}
             self.returns = {}
             saved_tensors_bw = self.saved_tensors_bw
+            saved_params_step = self.saved_params_step
             returns_chunk = self.returns
 
         kwargs_gm = {}
@@ -381,6 +382,9 @@ class CompiledStage:
                 kwargs_gm[arg_name] = self.fw_gm.node_states[StateType.BUFFERS][arg_name]
             else:
                 raise RuntimeError(f"arg {arg_name} not found")
+
+            if self.has_step and arg_name in self.stage_optim_input_params:
+                saved_params_step[arg_name] = kwargs_gm[arg_name]
 
             if self.has_bw and arg_name in self.tensors_to_save_bw:
                 saved_tensors_bw[arg_name] = kwargs_gm[arg_name]
@@ -409,19 +413,24 @@ class CompiledStage:
             if self.has_bw and output_name in self.tensors_to_save_bw:
                 saved_tensors_bw[output_name] = output
 
+            if self.has_step and output_name in self.stage_optim_input_params:
+                saved_params_step[output_name] = output
+
         return ret
 
     @torch.no_grad
-    def backward(self, saved_tensors_bw: Optional[Dict]=None, grads: Optional[Dict]=None, **kwargs):
+    def backward(self, saved_tensors_bw: Optional[Dict]=None, saved_grads_step: Optional[Dict]=None, grads: Optional[Dict]=None, **kwargs):
         if not self.has_bw:
             raise NotImplementedError("This compiled stage doesn't contain bw_gm")
 
         assert set(kwargs.keys()) == self.bw_func_args, "backward args should be saved for fw"
 
-        if saved_tensors_bw is None or grads is None:  # for local run
-            assert saved_tensors_bw is None and grads is None
-            self.grads = {}
+        if saved_tensors_bw is None or saved_grads_step is None or grads is None:  # for local run
+            assert saved_tensors_bw is None and saved_grads_step is None and grads is None
             saved_tensors_bw = self.saved_tensors_bw
+            self.saved_grads_step = {}
+            saved_grads_step = self.saved_grads_step
+            self.grads = {}
             grads = self.grads
 
         kwargs_gm = {}
@@ -444,22 +453,29 @@ class CompiledStage:
         for output_name, output in zip(self.bw_gm.outputs_spec, output_gm):
             if output_name in self.bw_func_returns:
                 ret[output_name] = output
-            else:
+
+            if output_name in self.compiled_meta.output_grads_map.inv_keys():
                 grads[output_name] = output
+
+            if output_name in self.stage_optim_input_grads:
+                saved_grads_step[output_name] = output
 
         return ret
 
     @torch.no_grad
-    def step(self, grads: Optional[Dict]=None):
+    def step(self, saved_params_step: Optional[Dict]=None, saved_grads_step: Optional[Dict]=None):
         if not self.has_step:
             raise NotImplementedError("This compiled stage doesn't contain step_gm")
 
-        if grads is None:
-            grads = self.grads
+        if saved_params_step is None or saved_grads_step is None:
+            assert saved_params_step is None and saved_grads_step is None
+            saved_params_step = self.saved_tensors_step
+            saved_grads_step = self.saved_grads_step
 
         with torch.profiler.record_function("actual_compute"):
-            output_gm = self.stage_step_gm(**grads, **self.stage_step_gm.node_states[StateType.OPTIMSTATES], **self.fw_gm.node_states[StateType.PARAMS])
-        grads.clear()
+            output_gm = self.stage_step_gm(**saved_params_step, **saved_grads_step, **self.stage_step_gm.node_states[StateType.OPTIMSTATES])
+        saved_params_step.clear()
+        saved_grads_step.clear()
 
         for output_name, output in zip(self.stage_step_gm.outputs_spec, output_gm):
             if output_name in self.compiled_meta.output_params_map.inv_keys():  # updated params

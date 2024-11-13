@@ -248,10 +248,14 @@ class PipelineStage(RuntimeMixin):
         self.cur_bw_chunk_id = 0
         self.kwargs_chunks = [{} for _ in range(self.num_chunks)]
         self.saved_tensors_bw_chunks: List[Dict[str, Any]] = [{} for _ in range(self.num_chunks)]
+        self.saved_params_step: Dict[str, Any] = {}
+        self.saved_grads_step_chunks: List[Dict[str, Any]] = [{} for _ in range(self.num_chunks)]
+        self.output_grads_chunk: List[Dict[str, Any]] = [{} for _ in range(self.num_chunks)]
         self.returns_chunks: List[Dict[str, Any]] = [{} for _ in range(self.num_chunks)]
-        self.grads_chunks: List[Dict[str, Any]] = [{} for _ in range(self.num_chunks)]
+
         if self.accumulate_grads_inplace:
-            self.grads = {}
+            self.output_grads_reduced = {}
+            self.step_grads_reduced = {}
 
     def reset_and_check_runtime_states(self):
 
@@ -271,10 +275,12 @@ class PipelineStage(RuntimeMixin):
 
         check_single(self.returns_chunks)
         check_single(self.saved_tensors_bw_chunks)
-        check_single(self.grads_chunks)
+        check_single(self.saved_grads_step_chunks)
+        check_single(self.output_grads_chunk)
 
         if self.accumulate_grads_inplace:
-            assert len(self.grads) == 0
+            assert len(self.output_grads_reduced) == 0
+            assert len(self.step_grads_reduced) == 0
 
     def _create_send_info(self, node: fx.Node,
                           is_forward: bool) -> Dict[int, List[str]]:
@@ -396,6 +402,7 @@ class PipelineStage(RuntimeMixin):
         # Compute forward
         self.cur_fw_send_chunk = self.compiled_stage.forward(
             self.saved_tensors_bw_chunks[self.cur_fw_chunk_id],
+            self.saved_params_step,
             self.returns_chunks[self.cur_fw_chunk_id],
             **composite_kwargs_chunk
         )
@@ -429,17 +436,22 @@ class PipelineStage(RuntimeMixin):
         # Compute backward
         self.cur_bw_send_chunk = self.compiled_stage.backward(
             self.saved_tensors_bw_chunks[self.cur_bw_chunk_id],
-            self.grads_chunks[self.cur_bw_chunk_id],
+            self.saved_grads_step_chunks[self.cur_bw_chunk_id],
+            self.output_grads_chunk[self.cur_bw_chunk_id],
             **composite_kwargs_chunk
         )
 
         if self.accumulate_grads_inplace:
-            for grad_node, grad in self.grads_chunks[self.cur_bw_chunk_id].items():
-                if grad_node in self.grads:
-                    self.grads[grad_node].add_(grad)
-                else:
-                    self.grads[grad_node] = grad
-            self.grads_chunks[self.cur_bw_chunk_id].clear()
+            def acculumate(acc_dict, chunk_list):
+                for grad_node, grad in chunk_list[self.cur_bw_chunk_id].items():
+                    if grad_node in acc_dict:
+                        acc_dict[grad_node].add_(grad)
+                    else:
+                        acc_dict[grad_node] = grad
+                
+                chunk_list[self.cur_bw_chunk_id].clear()
+            acculumate(self.step_grads_reduced, self.saved_grads_step_chunks)
+            acculumate(self.output_grads_reduced, self.output_grads_chunk)
 
         # Update runtime states
         self.cur_bw_chunk_id += 1
@@ -453,10 +465,7 @@ class PipelineStage(RuntimeMixin):
         return reqs
 
     def step(self):
-        self.compiled_stage.step(self.grads)
-
-        for p in self.compiled_stage.fw_gm.node_states[StateType.PARAMS].values():
-            p.grad = None
+        self.compiled_stage.step(self.saved_params_step, self.step_grads_reduced)
 
     def split_input_kwargs(self, kwargs):
         return split_args_kwargs_into_chunks(
@@ -470,21 +479,20 @@ class PipelineStage(RuntimeMixin):
     @torch.no_grad
     def merge_and_assign_chunked_grads(self) -> None:
         if not self.accumulate_grads_inplace:
-            self.grads = reduce(lambda a, b: {k: torch.add(a[k], b[k]) for k in a}, self.grads_chunks)
-            for chunk in self.grads_chunks:
+            self.step_grads_reduced = reduce(lambda a, b: {k: torch.add(a[k], b[k]) for k in a}, self.saved_grads_step_chunks)
+            for chunk in self.saved_grads_step_chunks:
+                chunk.clear()
+            self.output_grads_reduced = reduce(lambda a, b: {k: torch.add(a[k], b[k]) for k in a}, self.output_grads_chunk)
+            for chunk in self.output_grads_chunk:
                 chunk.clear()
 
-        if self.step_node is not None:
-            for grad_name, grad in self.grads.items():
-                self.compiled_stage.fw_gm.node_states[StateType.PARAMS][
-                    self.compiled_meta.input_node_to_step_input_grads.inv_get(grad_name)
-                ].grad = grad
-        else:
-            for grad_name, grad in self.grads.items():
-                self.compiled_stage.fw_gm.node_states[StateType.PARAMS][
-                    self.compiled_meta.input_params_map.get(self.compiled_meta.output_grads_map.inv_get(grad_name))
-                ].grad = grad
-            self.grads.clear()  # no step gm, assign grads and clear it
+        if self.step_node is None:
+            for grad_name, grad in self.output_grads_reduced.items():
+                param_torch_name = self.compiled_meta.output_grads_map.inv_get(grad_name)
+                param_node_name = self.compiled_meta.input_params_map.get(param_torch_name)
+                self.compiled_stage.fw_gm.node_states[StateType.PARAMS][param_node_name].grad = grad
+
+        self.output_grads_reduced.clear()
 
     @torch.no_grad
     def merge_chunked_returns(self) -> Tuple[Any, ...]:

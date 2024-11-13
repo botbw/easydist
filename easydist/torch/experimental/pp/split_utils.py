@@ -270,13 +270,13 @@ class SplitPatcher(_Patcher):
                     if p in self.optimizer.state:
                         named_states[n] = self.optimizer.state[p]
 
-                states, spec = pytree.tree_flatten((params, grads, named_states))
+                states, spec = pytree.tree_flatten((params, grads))
 
                 ctx = {}
                 states = list_before_split(ctx, states)
                 states = split_func_optimizier_step(states)
                 states = list_after_split(ctx, states)
-                params, split_grads, named_states = pytree.tree_unflatten(states, spec)
+                params, split_grads = pytree.tree_unflatten(states, spec)
 
                 for n, p in params.items():  # need to split on grads
                     p.grad = split_grads[n]
@@ -285,6 +285,9 @@ class SplitPatcher(_Patcher):
                         cast(torch.nn.Module, self.module), params, tie_weights=True) if self.module else nullcontext(), _rematerialize_optimizer(
                             optimizer, named_states, params) if optimizer else nullcontext():
                     orig_step(optimizer, *args, **kwargs)
+
+                for n, p in params.items():  # need to restore grads
+                    p.grad = grads[n]
 
                 set_updated_params_states(params, named_states)
                 set_step_flag(True)
