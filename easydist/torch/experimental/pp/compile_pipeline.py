@@ -457,7 +457,7 @@ class CompiledStage:
             if output_name in self.compiled_meta.output_grads_map.inv_keys():
                 grads[output_name] = output
 
-            if output_name in self.stage_optim_input_grads:
+            if self.has_step and output_name in self.stage_optim_input_grads:
                 saved_grads_step[output_name] = output
 
         return ret

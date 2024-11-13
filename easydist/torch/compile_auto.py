@@ -756,8 +756,8 @@ def _compile_auto(func,
                 params, buffers, named_states, grads, sharded_out = graph(
                     params, buffers, named_states, args, kwargs)
 
-            for para_name in params:
-                params[para_name].grad = grads[para_name]
+            # for para_name in params:
+            #     params[para_name].grad = grads[para_name]  # TODO @botbw: shape error?
 
             # out from DTensor to Tensor
             local_out = pytree.tree_map(dtensor_to_tensor, sharded_out)
