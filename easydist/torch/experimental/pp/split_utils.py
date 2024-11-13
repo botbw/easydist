@@ -193,12 +193,14 @@ def set_step_flag(flag):
     global __step_flag
     __step_flag = flag
 
+fw_bw_splitted = False
 
 def clear_pp_compile_states():
     set_backward_flag(False)
     set_updated_params_states(None, None)
     set_step_flag(False)
-
+    global fw_bw_splitted
+    fw_bw_splitted = False
 
 def get_registered_by_mro(registered, cls_begin: type) -> type:
     for cls in cls_begin.mro():
@@ -215,7 +217,6 @@ def split(ret):
     ret = get_registered_by_mro(_after_split, cls_ret)(ctx, tensor_tuple_after_split)
     return ret
 
-fw_bw_splitted = False
 class SplitPatcher(_Patcher):
 
     def __init__(self, module: torch.nn.Module, optimizer: torch.optim.Optimizer):
