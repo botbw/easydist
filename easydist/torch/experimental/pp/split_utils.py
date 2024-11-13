@@ -13,49 +13,49 @@
 # ==============================================================================
 
 from contextlib import nullcontext
-from typing import List, Union, Tuple, Any, Sequence, Optional, cast
+from typing import List, Optional, Sequence, Tuple, cast
 
 import torch
 import torch._custom_ops
-
-from easydist.torch.utils import _rematerialize_optimizer
 import torch.utils._pytree as pytree
 from torch.fx._symbolic_trace import _Patcher
 from torch.nn.utils import stateless
+
 from easydist.torch.split_utils import (
-    list_before_split,
-    list_after_split,
-    _before_split,
     _after_split,
+    _before_split,
+    list_after_split,
+    list_before_split,
 )
+from easydist.torch.utils import _rematerialize_optimizer
 
 '''
-The valid parameters types are: 
+The valid parameters types are:
 dict_keys([
-    <class 'torch.Tensor'>, 
-    typing.Optional[torch.Tensor], 
-    typing.Sequence[torch.Tensor], 
+    <class 'torch.Tensor'>,
+    typing.Optional[torch.Tensor],
+    typing.Sequence[torch.Tensor],
     typing.Sequence[typing.Optional[torch.Tensor]],
-    <class 'int'>, 
-    typing.Optional[int], 
-    typing.Sequence[int], 
-    typing.Optional[typing.Sequence[int]], 
-    <class 'float'>, 
-    typing.Optional[float], 
-    typing.Sequence[float], 
-    typing.Optional[typing.Sequence[float]], 
-    <class 'bool'>, 
-    typing.Optional[bool], 
-    typing.Sequence[bool], 
-    typing.Optional[typing.Sequence[bool]], 
-    <class 'str'>, 
-    typing.Optional[str], 
-    typing.Union[int, float, bool], 
-    typing.Union[int, float, bool, NoneType], 
+    <class 'int'>,
+    typing.Optional[int],
+    typing.Sequence[int],
+    typing.Optional[typing.Sequence[int]],
+    <class 'float'>,
+    typing.Optional[float],
+    typing.Sequence[float],
+    typing.Optional[typing.Sequence[float]],
+    <class 'bool'>,
+    typing.Optional[bool],
+    typing.Sequence[bool],
+    typing.Optional[typing.Sequence[bool]],
+    <class 'str'>,
+    typing.Optional[str],
+    typing.Union[int, float, bool],
+    typing.Union[int, float, bool, NoneType],
     typing.Sequence[typing.Union[int, float, bool]],
-    <class 'torch.dtype'>, 
-    typing.Optional[torch.dtype], 
-    <class 'torch.device'>, 
+    <class 'torch.dtype'>,
+    typing.Optional[torch.dtype],
+    <class 'torch.device'>,
     typing.Optional[torch.device]]
     )
 '''

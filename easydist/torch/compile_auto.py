@@ -15,56 +15,69 @@
 import logging
 import os
 import pickle
-import time
-import threading
-from functools import partial, reduce
-from typing import Any, Union, Set, Dict, List, Tuple, Callable
-
-import rich
-import intervaltree
-import torch
-import torch.utils._pytree as pytree
-import torch.distributed.rpc as rpc
-from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
-from torch.distributed._tensor import (DeviceMesh, DTensor, Replicate, distribute_tensor)
-from torch.fx._pytree import tree_flatten_spec
-from torch.fx.experimental.proxy_tensor import make_fx
-from torch.fx.passes.graph_drawer import FxGraphDrawer
-from torch._functorch.partitioners import default_partition
-
-import easydist.config as mdconfig
-from easydist.autoflow.solver import AutoFlowSolver1D
-from easydist.metashard.metair import SPMD, VarSPMDStrategy
-from easydist.torch.bridge import (get_torch_sharding_strategy, to_torch_spmd, torch2meta_graph)
-from easydist.torch.decomp_utils import EASYDIST_DECOMP_TABLE
-from easydist.torch.experimental.pp.runtime import PipelineStage, ScheduleGPipe
-from easydist.torch.experimental.pp.compile_pipeline import compile_pipeline
-from easydist.torch.experimental.pp.microbatch import split_args_kwargs_into_chunks
-from easydist.torch.experimental.pp.split_utils import set_backward_flag, set_step_flag, set_updated_params_states
-from easydist.torch.experimental.pp.utils import save_graphviz_dot
-from easydist.torch.init_helper import (init_contiguous_buf, materialize_zero)
-from easydist.torch.passes import (eliminate_detach, fix_addmm_bias, fix_convoluation_bias, decouple_view,
-                                   tile_comm, runtime_prof, fix_embedding, fix_meta_device,
-                                   sharding_transform, sharding_transform_dtensor, get_partition,
-                                   AllocatorProfiler, ModuleProfilingInfo)
-from easydist.torch.device_mesh import get_device_mesh
-from easydist.torch.passes import comm_optimize, rule_override_by_graph, create_edinfo
-from easydist.torch.schedule.ilp_memory_scheduler import ILPMemoryScheduler
-from easydist.torch.schedule.efficient_memory_scheduler import EfficientMemoryScheduler
-from easydist.torch.schedule.graph_mem_plan import GraphMemPlan
-from easydist.torch.sharding_interpreter import EDTorchShardingAnn
-from easydist.torch.compile import ed_compile_func, stateless_func
-from easydist.torch.utils import (_enable_compile, _sharding_ann_env, do_spmd_comm)
-from easydist.utils.testing.mock import TorchMockDeviceMesh
-from easydist.torch.mem_allocation_info import OutVar
-import easydist.torch.profiler.stream_tracer as ed_stream_tracer
-from easydist.torch.meta_allocator import profiling_allocator
-from easydist.torch.schedule.lifetime_info import mem_owner_tracer
-from easydist.torch.scope_auto.build_scope_modules import build_scope_modules
-from easydist.torch.reachability import ReachabilityMap
 
 # for pickle dump opt_strategy
 import sys
+import threading
+import time
+from functools import partial, reduce
+from typing import Any, Callable, Dict, List, Set, Tuple
+
+import intervaltree
+import rich
+import torch
+import torch.distributed.rpc as rpc
+import torch.utils._pytree as pytree
+from torch._functorch.partitioners import default_partition
+from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
+from torch.distributed._tensor import DTensor, Replicate, distribute_tensor
+from torch.fx._pytree import tree_flatten_spec
+from torch.fx.experimental.proxy_tensor import make_fx
+from torch.fx.passes.graph_drawer import FxGraphDrawer
+
+import easydist.config as mdconfig
+import easydist.torch.profiler.stream_tracer as ed_stream_tracer
+from easydist.autoflow.solver import AutoFlowSolver1D
+from easydist.metashard.metair import SPMD, VarSPMDStrategy
+from easydist.torch.bridge import (
+    get_torch_sharding_strategy,
+    to_torch_spmd,
+    torch2meta_graph,
+)
+from easydist.torch.compile import ed_compile_func, stateless_func
+from easydist.torch.decomp_utils import EASYDIST_DECOMP_TABLE
+from easydist.torch.device_mesh import get_device_mesh
+from easydist.torch.experimental.pp.compile_pipeline import compile_pipeline
+from easydist.torch.experimental.pp.microbatch import split_args_kwargs_into_chunks
+from easydist.torch.experimental.pp.runtime import PipelineStage
+from easydist.torch.experimental.pp.utils import save_graphviz_dot
+from easydist.torch.init_helper import init_contiguous_buf, materialize_zero
+from easydist.torch.mem_allocation_info import OutVar
+from easydist.torch.meta_allocator import profiling_allocator
+from easydist.torch.passes import (
+    AllocatorProfiler,
+    ModuleProfilingInfo,
+    comm_optimize,
+    create_edinfo,
+    decouple_view,
+    eliminate_detach,
+    fix_addmm_bias,
+    fix_embedding,
+    fix_meta_device,
+    get_partition,
+    rule_override_by_graph,
+    runtime_prof,
+    sharding_transform,
+    sharding_transform_dtensor,
+    tile_comm,
+)
+from easydist.torch.reachability import ReachabilityMap
+from easydist.torch.schedule.efficient_memory_scheduler import EfficientMemoryScheduler
+from easydist.torch.schedule.graph_mem_plan import GraphMemPlan
+from easydist.torch.schedule.ilp_memory_scheduler import ILPMemoryScheduler
+from easydist.torch.schedule.lifetime_info import mem_owner_tracer
+from easydist.torch.sharding_interpreter import EDTorchShardingAnn
+from easydist.torch.utils import _enable_compile, _sharding_ann_env, do_spmd_comm
 
 sys.setrecursionlimit(100000)
 
@@ -132,8 +145,8 @@ def easydist_shard(fx_module: torch.fx.GraphModule, state_tensor_num,
                                           opt_strtg_per_mesh_dim, dim_size)
 
             if mdconfig.log_level <= logging.DEBUG:
-                rich.print(meta_graph) 
-            
+                rich.print(meta_graph)
+
             # (3) construct AutoFlowSolver and run ILP
             solver = AutoFlowSolver1D(dim_size, mesh_dim=dim, total_memery=total_memory,
                                       reachability_map=reachability_map)

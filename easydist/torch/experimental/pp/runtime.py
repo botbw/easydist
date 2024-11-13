@@ -26,6 +26,7 @@ import torch.utils._pytree as pytree
 from torch._subclasses.fake_tensor import FakeTensor
 from torch.distributed._tensor import Replicate
 
+from easydist.torch.device_mesh import get_device_mesh
 from easydist.torch.experimental.pp.compile_pipeline import (
     CompiledMeta,
     CompiledStage,
@@ -38,9 +39,8 @@ from easydist.torch.experimental.pp.microbatch import (
     merge_chunks,
     split_args_kwargs_into_chunks,
 )
-from easydist.torch.utils import do_spmd_comm
 from easydist.torch.init_helper import materialize_zero
-from easydist.torch.device_mesh import get_device_mesh
+from easydist.torch.utils import do_spmd_comm
 
 logger = logging.getLogger(__name__)
 
