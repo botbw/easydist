@@ -354,7 +354,6 @@ class CompiledStage:
                     (compiled_meta.input_params_map.inv_get(node_name), state_type)
                 ) for node_name in stage_param_nodes for state_type in compiled_meta.optim_state_types
             )
-            self.optim_grads = self.stage_optim_input_params
             self.step_func_args = self.stage_optim_input_params | self.stage_optim_input_grads | stage_optim_input_states
             self.stage_step_gm = _extract_step_subgraph_from_args(full_step_gm, self.step_func_args)
             save_graphviz_dot(self.stage_step_gm.gm, self.fw_gm.name + '(step)')
